@@ -178,6 +178,13 @@ The `action` decorator will route `GET` requests by default, but may also accept
         def unset_password(self, request, pk=None):
            ...
 
+Argument `methods` also supports HTTP methods defined as [HTTPMethod](https://docs.python.org/3/library/http.html#http.HTTPMethod). Example below is identical to the one above: 
+
+        from http import HTTPMethod
+
+        @action(detail=True, methods=[HTTPMethod.POST, HTTPMethod.DELETE])
+        def unset_password(self, request, pk=None):
+           ...
 
 The decorator allows you to override any viewset-level configuration such as `permission_classes`, `serializer_class`, `filter_backends`...:
 
@@ -194,15 +201,16 @@ To view all extra actions, call the `.get_extra_actions()` method.
 Extra actions can map additional HTTP methods to separate `ViewSet` methods. For example, the above password set/unset methods could be consolidated into a single route. Note that additional mappings do not accept arguments.
 
 ```python
-    @action(detail=True, methods=['put'], name='Change Password')
-    def password(self, request, pk=None):
-        """Update the user's password."""
-        ...
+@action(detail=True, methods=["put"], name="Change Password")
+def password(self, request, pk=None):
+    """Update the user's password."""
+    ...
 
-    @password.mapping.delete
-    def delete_password(self, request, pk=None):
-        """Delete the user's password."""
-        ...
+
+@password.mapping.delete
+def delete_password(self, request, pk=None):
+    """Delete the user's password."""
+    ...
 ```
 
 ## Reversing action URLs
@@ -213,14 +221,14 @@ Note that the `basename` is provided by the router during `ViewSet` registration
 
 Using the example from the previous section:
 
-```python
->>> view.reverse_action('set-password', args=['1'])
+```pycon
+>>> view.reverse_action("set-password", args=["1"])
 'http://localhost:8000/api/users/1/set_password'
 ```
 
 Alternatively, you can use the `url_name` attribute set by the `@action` decorator.
 
-```python
+```pycon
 >>> view.reverse_action(view.set_password.url_name, args=['1'])
 'http://localhost:8000/api/users/1/set_password'
 ```
@@ -303,7 +311,7 @@ You may need to provide custom `ViewSet` classes that do not have the full set o
 
 To create a base viewset class that provides `create`, `list` and `retrieve` operations, inherit from `GenericViewSet`, and mixin the required actions:
 
-    from rest_framework import mixins
+    from rest_framework import mixins, viewsets
 
     class CreateListRetrieveViewSet(mixins.CreateModelMixin,
                                     mixins.ListModelMixin,

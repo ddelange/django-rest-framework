@@ -15,7 +15,7 @@ import contextlib
 import copy
 import inspect
 import traceback
-from collections import OrderedDict, defaultdict
+from collections import defaultdict
 from collections.abc import Mapping
 
 from django.core.exceptions import FieldDoesNotExist, ImproperlyConfigured
@@ -28,7 +28,7 @@ from django.utils.translation import gettext_lazy as _
 
 from rest_framework.compat import postgres_fields
 from rest_framework.exceptions import ErrorDetail, ValidationError
-from rest_framework.fields import get_error_detail, set_value
+from rest_framework.fields import get_error_detail
 from rest_framework.settings import api_settings
 from rest_framework.utils import html, model_meta, representation
 from rest_framework.utils.field_mapping import (
@@ -76,6 +76,7 @@ LIST_SERIALIZER_KWARGS = (
     'instance', 'data', 'partial', 'context', 'allow_null',
     'max_length', 'min_length'
 )
+LIST_SERIALIZER_KWARGS_REMOVE = ('allow_empty', 'min_length', 'max_length')
 
 ALL_FIELDS = '__all__'
 
@@ -145,19 +146,12 @@ class BaseSerializer(Field):
             kwargs['child'] = cls()
             return CustomListSerializer(*args, **kwargs)
         """
-        allow_empty = kwargs.pop('allow_empty', None)
-        max_length = kwargs.pop('max_length', None)
-        min_length = kwargs.pop('min_length', None)
-        child_serializer = cls(*args, **kwargs)
-        list_kwargs = {
-            'child': child_serializer,
-        }
-        if allow_empty is not None:
-            list_kwargs['allow_empty'] = allow_empty
-        if max_length is not None:
-            list_kwargs['max_length'] = max_length
-        if min_length is not None:
-            list_kwargs['min_length'] = min_length
+        list_kwargs = {}
+        for key in LIST_SERIALIZER_KWARGS_REMOVE:
+            value = kwargs.pop(key, None)
+            if value is not None:
+                list_kwargs[key] = value
+        list_kwargs['child'] = cls(*args, **kwargs)
         list_kwargs.update({
             key: value for key, value in kwargs.items()
             if key in LIST_SERIALIZER_KWARGS
@@ -308,7 +302,7 @@ class SerializerMetaclass(type):
             for name, f in base._declared_fields.items() if name not in known
         ]
 
-        return OrderedDict(base_fields + fields)
+        return dict(base_fields + fields)
 
     def __new__(cls, name, bases, attrs):
         attrs['_declared_fields'] = cls._get_declared_fields(bases, attrs)
@@ -345,6 +339,26 @@ class Serializer(BaseSerializer, metaclass=SerializerMetaclass):
     default_error_messages = {
         'invalid': _('Invalid data. Expected a dictionary, but got {datatype}.')
     }
+
+    def set_value(self, dictionary, keys, value):
+        """
+        Similar to Python's built in `dictionary[key] = value`,
+        but takes a list of nested keys instead of a single key.
+
+        set_value({'a': 1}, [], {'b': 2}) -> {'a': 1, 'b': 2}
+        set_value({'a': 1}, ['x'], 2) -> {'a': 1, 'x': 2}
+        set_value({'a': 1}, ['x', 'y'], 2) -> {'a': 1, 'x': {'y': 2}}
+        """
+        if not keys:
+            dictionary.update(value)
+            return
+
+        for key in keys[:-1]:
+            if key not in dictionary:
+                dictionary[key] = {}
+            dictionary = dictionary[key]
+
+        dictionary[keys[-1]] = value
 
     @cached_property
     def fields(self):
@@ -393,20 +407,20 @@ class Serializer(BaseSerializer, metaclass=SerializerMetaclass):
         if hasattr(self, 'initial_data'):
             # initial_data may not be a valid type
             if not isinstance(self.initial_data, Mapping):
-                return OrderedDict()
+                return {}
 
-            return OrderedDict([
-                (field_name, field.get_value(self.initial_data))
+            return {
+                field_name: field.get_value(self.initial_data)
                 for field_name, field in self.fields.items()
                 if (field.get_value(self.initial_data) is not empty) and
                 not field.read_only
-            ])
+            }
 
-        return OrderedDict([
-            (field.field_name, field.get_initial())
+        return {
+            field.field_name: field.get_initial()
             for field in self.fields.values()
             if not field.read_only
-        ])
+        }
 
     def get_value(self, dictionary):
         # We override the default field access in order to support
@@ -441,7 +455,7 @@ class Serializer(BaseSerializer, metaclass=SerializerMetaclass):
             if (field.read_only) and (field.default != empty) and (field.source != '*') and ('.' not in field.source)
         ]
 
-        defaults = OrderedDict()
+        defaults = {}
         for field in fields:
             try:
                 default = field.get_default()
@@ -474,8 +488,8 @@ class Serializer(BaseSerializer, metaclass=SerializerMetaclass):
                 api_settings.NON_FIELD_ERRORS_KEY: [message]
             }, code='invalid')
 
-        ret = OrderedDict()
-        errors = OrderedDict()
+        ret = {}
+        errors = {}
         fields = self._writable_fields
 
         for field in fields:
@@ -492,7 +506,7 @@ class Serializer(BaseSerializer, metaclass=SerializerMetaclass):
             except SkipField:
                 pass
             else:
-                set_value(ret, field.source_attrs, validated_value)
+                self.set_value(ret, field.source_attrs, validated_value)
 
         if errors:
             raise ValidationError(errors)
@@ -503,7 +517,7 @@ class Serializer(BaseSerializer, metaclass=SerializerMetaclass):
         """
         Object instance -> Dict of primitive datatypes.
         """
-        ret = OrderedDict()
+        ret = {}
         fields = self._readable_fields
 
         for field in fields:
@@ -627,6 +641,17 @@ class ListSerializer(BaseSerializer):
 
         return value
 
+    def run_child_validation(self, data):
+        """
+        Run validation on child serializer.
+        You may need to override this method to support multiple updates. For example:
+
+        self.child.instance = self.instance.get(pk=data['id'])
+        self.child.initial_data = data
+        return super().run_child_validation(data)
+        """
+        return self.child.run_validation(data)
+
     def to_internal_value(self, data):
         """
         List of dicts of native values <- List of dicts of primitive datatypes.
@@ -665,7 +690,7 @@ class ListSerializer(BaseSerializer):
 
         for item in data:
             try:
-                validated = self.child.run_validation(item)
+                validated = self.run_child_validation(item)
             except ValidationError as exc:
                 errors.append(exc.detail)
             else:
@@ -1061,7 +1086,7 @@ class ModelSerializer(Serializer):
         )
 
         # Determine the fields that should be included on the serializer.
-        fields = OrderedDict()
+        fields = {}
 
         for field_name in field_names:
             # If the field is explicitly declared on the class then use that.
@@ -1340,8 +1365,8 @@ class ModelSerializer(Serializer):
         Raise an error on any unknown fields.
         """
         raise ImproperlyConfigured(
-            'Field name `%s` is not valid for model `%s`.' %
-            (field_name, model_class.__name__)
+            'Field name `%s` is not valid for model `%s` in `%s.%s`.' %
+            (field_name, model_class.__name__, self.__class__.__module__, self.__class__.__name__)
         )
 
     def include_extra_kwargs(self, kwargs, extra_kwargs):
@@ -1465,6 +1490,8 @@ class ModelSerializer(Serializer):
                 default = timezone.now
             elif unique_constraint_field.has_default():
                 default = unique_constraint_field.default
+            elif unique_constraint_field.null:
+                default = None
             else:
                 default = empty
 
@@ -1546,16 +1573,16 @@ class ModelSerializer(Serializer):
         # which may map onto a model field. Any dotted field name lookups
         # cannot map to a field, and must be a traversal, so we're not
         # including those.
-        field_sources = OrderedDict(
-            (field.field_name, field.source) for field in self._writable_fields
+        field_sources = {
+            field.field_name: field.source for field in self._writable_fields
             if (field.source != '*') and ('.' not in field.source)
-        )
+        }
 
         # Special Case: Add read_only fields with defaults.
-        field_sources.update(OrderedDict(
-            (field.field_name, field.source) for field in self.fields.values()
+        field_sources.update({
+            field.field_name: field.source for field in self.fields.values()
             if (field.read_only) and (field.default != empty) and (field.source != '*') and ('.' not in field.source)
-        ))
+        })
 
         # Invert so we can find the serializer field names that correspond to
         # the model field names in the unique_together sets. This also allows

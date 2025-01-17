@@ -274,6 +274,7 @@ class TestPageNumberPagination:
 
         assert self.pagination.get_paginated_response_schema(unpaginated_schema) == {
             'type': 'object',
+            'required': ['count', 'results'],
             'properties': {
                 'count': {
                     'type': 'integer',
@@ -585,6 +586,7 @@ class TestLimitOffset:
 
         assert self.pagination.get_paginated_response_schema(unpaginated_schema) == {
             'type': 'object',
+            'required': ['count', 'results'],
             'properties': {
                 'count': {
                     'type': 'integer',
@@ -627,6 +629,24 @@ class CursorPaginationTestsMixin:
         request = Request(factory.get('/', {'ordering': '-username'}))
         ordering = self.pagination.get_ordering(request, [], MockView())
         assert ordering == ('-username',)
+
+        request = Request(factory.get('/', {'ordering': 'invalid'}))
+        ordering = self.pagination.get_ordering(request, [], MockView())
+        assert ordering == ('created',)
+
+    def test_use_with_ordering_filter_without_ordering_default_value(self):
+        class MockView:
+            filter_backends = (filters.OrderingFilter,)
+            ordering_fields = ['username', 'created']
+
+        request = Request(factory.get('/'))
+        ordering = self.pagination.get_ordering(request, [], MockView())
+        # it gets the value of `ordering` provided by CursorPagination
+        assert ordering == ('created',)
+
+        request = Request(factory.get('/', {'ordering': 'username'}))
+        ordering = self.pagination.get_ordering(request, [], MockView())
+        assert ordering == ('username',)
 
         request = Request(factory.get('/', {'ordering': 'invalid'}))
         ordering = self.pagination.get_ordering(request, [], MockView())
@@ -919,6 +939,7 @@ class CursorPaginationTestsMixin:
 
         assert self.pagination.get_paginated_response_schema(unpaginated_schema) == {
             'type': 'object',
+            'required': ['results'],
             'properties': {
                 'next': {
                     'type': 'string',

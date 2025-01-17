@@ -4,11 +4,20 @@ import os
 import re
 import sys
 import uuid
+import warnings
 from decimal import ROUND_DOWN, ROUND_UP, Decimal
+from enum import auto
+from unittest.mock import patch
 
 import pytest
-import pytz
+
+try:
+    import pytz
+except ImportError:
+    pytz = None
+
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import IntegerChoices, TextChoices
 from django.http import QueryDict
 from django.test import TestCase, override_settings
 from django.utils.timezone import activate, deactivate, override
@@ -20,6 +29,11 @@ from rest_framework.fields import (
     is_simple_callable
 )
 from tests.models import UUIDForeignKeyTarget
+
+if sys.version_info >= (3, 9):
+    from zoneinfo import ZoneInfo
+else:
+    from backports.zoneinfo import ZoneInfo
 
 utc = datetime.timezone.utc
 
@@ -651,7 +665,7 @@ class FieldValues:
     """
     Base class for testing valid and invalid input values.
     """
-    def test_valid_inputs(self):
+    def test_valid_inputs(self, *args):
         """
         Ensure that valid values return the expected validated data.
         """
@@ -659,7 +673,7 @@ class FieldValues:
             assert self.field.run_validation(input_value) == expected_output, \
                 'input value: {}'.format(repr(input_value))
 
-    def test_invalid_inputs(self):
+    def test_invalid_inputs(self, *args):
         """
         Ensure that invalid values raise the expected validation error.
         """
@@ -669,7 +683,7 @@ class FieldValues:
             assert exc_info.value.detail == expected_failure, \
                 'input value: {}'.format(repr(input_value))
 
-    def test_outputs(self):
+    def test_outputs(self, *args):
         for output_value, expected_output in get_items(self.outputs):
             assert self.field.to_representation(output_value) == expected_output, \
                 'output value: {}'.format(repr(output_value))
@@ -682,8 +696,24 @@ class TestBooleanField(FieldValues):
     Valid and invalid values for `BooleanField`.
     """
     valid_inputs = {
+        'True': True,
+        'TRUE': True,
+        'tRuE': True,
+        't': True,
+        'T': True,
         'true': True,
+        'on': True,
+        'ON': True,
+        'oN': True,
+        'False': False,
+        'FALSE': False,
+        'fALse': False,
+        'f': False,
+        'F': False,
         'false': False,
+        'off': False,
+        'OFF': False,
+        'oFf': False,
         '1': True,
         '0': False,
         1: True,
@@ -696,8 +726,24 @@ class TestBooleanField(FieldValues):
         None: ['This field may not be null.']
     }
     outputs = {
+        'True': True,
+        'TRUE': True,
+        'tRuE': True,
+        't': True,
+        'T': True,
         'true': True,
+        'on': True,
+        'ON': True,
+        'oN': True,
+        'False': False,
+        'FALSE': False,
+        'fALse': False,
+        'f': False,
+        'F': False,
         'false': False,
+        'off': False,
+        'OFF': False,
+        'oFf': False,
         '1': True,
         '0': False,
         1: True,
@@ -1199,14 +1245,29 @@ class TestMinMaxDecimalField(FieldValues):
         '20.0': Decimal('20.0'),
     }
     invalid_inputs = {
-        '9.9': ['Ensure this value is greater than or equal to 10.'],
-        '20.1': ['Ensure this value is less than or equal to 20.'],
+        '9.9': ['Ensure this value is greater than or equal to 10.0.'],
+        '20.1': ['Ensure this value is less than or equal to 20.0.'],
     }
     outputs = {}
     field = serializers.DecimalField(
         max_digits=3, decimal_places=1,
-        min_value=10, max_value=20
+        min_value=10.0, max_value=20.0
     )
+
+    def test_warning_when_not_decimal_types(self, caplog):
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter('always')
+
+            serializers.DecimalField(
+                max_digits=3, decimal_places=1,
+                min_value=10.0, max_value=20.0
+            )
+
+            assert len(w) == 2
+            assert all(issubclass(i.category, UserWarning) for i in w)
+
+            assert 'max_value should be an integer or Decimal instance' in str(w[0].message)
+            assert 'min_value should be an integer or Decimal instance' in str(w[1].message)
 
 
 class TestAllowEmptyStrDecimalFieldWithValidators(FieldValues):
@@ -1482,7 +1543,8 @@ class TestNoOutputFormatDateTimeField(FieldValues):
     field = serializers.DateTimeField(format=None)
 
 
-class TestNaiveDateTimeField(FieldValues):
+@override_settings(TIME_ZONE='UTC', USE_TZ=False)
+class TestNaiveDateTimeField(FieldValues, TestCase):
     """
     Valid and invalid values for `DateTimeField` with naive datetimes.
     """
@@ -1505,12 +1567,12 @@ class TestTZWithDateTimeField(FieldValues):
     @classmethod
     def setup_class(cls):
         # use class setup method, as class-level attribute will still be evaluated even if test is skipped
-        kolkata = pytz.timezone('Asia/Kolkata')
+        kolkata = ZoneInfo('Asia/Kolkata')
 
         cls.valid_inputs = {
-            '2016-12-19T10:00:00': kolkata.localize(datetime.datetime(2016, 12, 19, 10)),
-            '2016-12-19T10:00:00+05:30': kolkata.localize(datetime.datetime(2016, 12, 19, 10)),
-            datetime.datetime(2016, 12, 19, 10): kolkata.localize(datetime.datetime(2016, 12, 19, 10)),
+            '2016-12-19T10:00:00': datetime.datetime(2016, 12, 19, 10, tzinfo=kolkata),
+            '2016-12-19T10:00:00+05:30': datetime.datetime(2016, 12, 19, 10, tzinfo=kolkata),
+            datetime.datetime(2016, 12, 19, 10): datetime.datetime(2016, 12, 19, 10, tzinfo=kolkata),
         }
         cls.invalid_inputs = {}
         cls.outputs = {
@@ -1529,7 +1591,7 @@ class TestDefaultTZDateTimeField(TestCase):
     @classmethod
     def setup_class(cls):
         cls.field = serializers.DateTimeField()
-        cls.kolkata = pytz.timezone('Asia/Kolkata')
+        cls.kolkata = ZoneInfo('Asia/Kolkata')
 
     def assertUTC(self, tzinfo):
         """
@@ -1551,18 +1613,17 @@ class TestDefaultTZDateTimeField(TestCase):
         self.assertUTC(self.field.default_timezone())
 
 
-@pytest.mark.skipif(pytz is None, reason='pytz not installed')
 @override_settings(TIME_ZONE='UTC', USE_TZ=True)
 class TestCustomTimezoneForDateTimeField(TestCase):
 
     @classmethod
     def setup_class(cls):
-        cls.kolkata = pytz.timezone('Asia/Kolkata')
+        cls.kolkata = ZoneInfo('Asia/Kolkata')
         cls.date_format = '%d/%m/%Y %H:%M'
 
     def test_should_render_date_time_in_default_timezone(self):
         field = serializers.DateTimeField(default_timezone=self.kolkata, format=self.date_format)
-        dt = datetime.datetime(2018, 2, 8, 14, 15, 16, tzinfo=pytz.utc)
+        dt = datetime.datetime(2018, 2, 8, 14, 15, 16, tzinfo=ZoneInfo("UTC"))
 
         with override(self.kolkata):
             rendered_date = field.to_representation(dt)
@@ -1572,6 +1633,33 @@ class TestCustomTimezoneForDateTimeField(TestCase):
         assert rendered_date == rendered_date_in_timezone
 
 
+@pytest.mark.skipif(pytz is None, reason="Django 5.0 has removed pytz; this test should eventually be able to get removed.")
+class TestPytzNaiveDayLightSavingTimeTimeZoneDateTimeField(FieldValues):
+    """
+    Invalid values for `DateTimeField` with datetime in DST shift (non-existing or ambiguous) and timezone with DST.
+    Timezone America/New_York has DST shift from 2017-03-12T02:00:00 to 2017-03-12T03:00:00 and
+     from 2017-11-05T02:00:00 to 2017-11-05T01:00:00 in 2017.
+    """
+    valid_inputs = {}
+    invalid_inputs = {
+        '2017-03-12T02:30:00': ['Invalid datetime for the timezone "America/New_York".'],
+        '2017-11-05T01:30:00': ['Invalid datetime for the timezone "America/New_York".']
+    }
+    outputs = {}
+
+    if pytz:
+        class MockTimezone(pytz.BaseTzInfo):
+            @staticmethod
+            def localize(value, is_dst):
+                raise pytz.InvalidTimeError()
+
+            def __str__(self):
+                return 'America/New_York'
+
+        field = serializers.DateTimeField(default_timezone=MockTimezone())
+
+
+@patch('rest_framework.utils.timezone.datetime_ambiguous', return_value=True)
 class TestNaiveDayLightSavingTimeTimeZoneDateTimeField(FieldValues):
     """
     Invalid values for `DateTimeField` with datetime in DST shift (non-existing or ambiguous) and timezone with DST.
@@ -1585,15 +1673,11 @@ class TestNaiveDayLightSavingTimeTimeZoneDateTimeField(FieldValues):
     }
     outputs = {}
 
-    class MockTimezone(pytz.BaseTzInfo):
-        @staticmethod
-        def localize(value, is_dst):
-            raise pytz.InvalidTimeError()
-
+    class MockZoneInfoTimezone(datetime.tzinfo):
         def __str__(self):
             return 'America/New_York'
 
-    field = serializers.DateTimeField(default_timezone=MockTimezone())
+    field = serializers.DateTimeField(default_timezone=MockZoneInfoTimezone())
 
 
 class TestTimeField(FieldValues):
@@ -1796,6 +1880,79 @@ class TestChoiceField(FieldValues):
         with pytest.raises(serializers.ValidationError) as exc_info:
             field.run_validation(2)
         assert exc_info.value.detail == ['"2" is not a valid choice.']
+
+    def test_enum_integer_choices(self):
+        from enum import IntEnum
+
+        class ChoiceCase(IntEnum):
+            first = auto()
+            second = auto()
+        # Enum validate
+        choices = [
+            (ChoiceCase.first, "1"),
+            (ChoiceCase.second, "2")
+        ]
+        field = serializers.ChoiceField(choices=choices)
+        assert field.run_validation(1) == 1
+        assert field.run_validation(ChoiceCase.first) == 1
+        assert field.run_validation("1") == 1
+        # Enum.value validate
+        choices = [
+            (ChoiceCase.first.value, "1"),
+            (ChoiceCase.second.value, "2")
+        ]
+        field = serializers.ChoiceField(choices=choices)
+        assert field.run_validation(1) == 1
+        assert field.run_validation(ChoiceCase.first) == 1
+        assert field.run_validation("1") == 1
+
+    def test_integer_choices(self):
+        class ChoiceCase(IntegerChoices):
+            first = auto()
+            second = auto()
+        # Enum validate
+        choices = [
+            (ChoiceCase.first, "1"),
+            (ChoiceCase.second, "2")
+        ]
+
+        field = serializers.ChoiceField(choices=choices)
+        assert field.run_validation(1) == 1
+        assert field.run_validation(ChoiceCase.first) == 1
+        assert field.run_validation("1") == 1
+
+        choices = [
+            (ChoiceCase.first.value, "1"),
+            (ChoiceCase.second.value, "2")
+        ]
+
+        field = serializers.ChoiceField(choices=choices)
+        assert field.run_validation(1) == 1
+        assert field.run_validation(ChoiceCase.first) == 1
+        assert field.run_validation("1") == 1
+
+    def test_text_choices(self):
+        class ChoiceCase(TextChoices):
+            first = auto()
+            second = auto()
+        # Enum validate
+        choices = [
+            (ChoiceCase.first, "first"),
+            (ChoiceCase.second, "second")
+        ]
+
+        field = serializers.ChoiceField(choices=choices)
+        assert field.run_validation(ChoiceCase.first) == "first"
+        assert field.run_validation("first") == "first"
+
+        choices = [
+            (ChoiceCase.first.value, "first"),
+            (ChoiceCase.second.value, "second")
+        ]
+
+        field = serializers.ChoiceField(choices=choices)
+        assert field.run_validation(ChoiceCase.first) == "first"
+        assert field.run_validation("first") == "first"
 
 
 class TestChoiceFieldWithType(FieldValues):

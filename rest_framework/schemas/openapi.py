@@ -1,6 +1,5 @@
 import re
 import warnings
-from collections import OrderedDict
 from decimal import Decimal
 from operator import attrgetter
 from urllib.parse import urljoin
@@ -13,9 +12,9 @@ from django.db import models
 from django.utils.encoding import force_str
 
 from rest_framework import (
-    RemovedInDRF315Warning, exceptions, renderers, serializers
+    RemovedInDRF316Warning, exceptions, renderers, serializers
 )
-from rest_framework.compat import uritemplate
+from rest_framework.compat import inflection, uritemplate
 from rest_framework.fields import _UnvalidatedField, empty
 from rest_framework.settings import api_settings
 
@@ -85,7 +84,7 @@ class SchemaGenerator(BaseSchemaGenerator):
                     continue
                 if components_schemas[k] == components[k]:
                     continue
-                warnings.warn('Schema component "{}" has been overriden with a different value.'.format(k))
+                warnings.warn('Schema component "{}" has been overridden with a different value.'.format(k))
 
             components_schemas.update(components)
 
@@ -248,9 +247,8 @@ class AutoSchema(ViewInspector):
                 name = name[:-len(action)]
 
         if action == 'list':
-            from inflection import pluralize
-
-            name = pluralize(name)
+            assert inflection, '`inflection` must be installed for OpenAPI schema support.'
+            name = inflection.pluralize(name)
 
         return name
 
@@ -340,7 +338,7 @@ class AutoSchema(ViewInspector):
         return paginator.get_schema_operation_parameters(view)
 
     def map_choicefield(self, field):
-        choices = list(OrderedDict.fromkeys(field.choices))  # preserve order and remove duplicates
+        choices = list(dict.fromkeys(field.choices))  # preserve order and remove duplicates
         if all(isinstance(choice, bool) for choice in choices):
             type = 'boolean'
         elif all(isinstance(choice, int) for choice in choices):
@@ -526,7 +524,7 @@ class AutoSchema(ViewInspector):
             if isinstance(field, serializers.HiddenField):
                 continue
 
-            if field.required:
+            if field.required and not serializer.partial:
                 required.append(self.get_field_name(field))
 
             schema = self.map_field(field)
@@ -727,7 +725,7 @@ class AutoSchema(ViewInspector):
     def _get_reference(self, serializer):
         warnings.warn(
             "Method `_get_reference()` has been renamed to `get_reference()`. "
-            "The old name will be removed in DRF v3.15.",
-            RemovedInDRF315Warning, stacklevel=2
+            "The old name will be removed in DRF v3.16.",
+            RemovedInDRF316Warning, stacklevel=2
         )
         return self.get_reference(serializer)

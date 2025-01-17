@@ -4,8 +4,9 @@ be used for paginated responses.
 """
 
 import contextlib
+import warnings
 from base64 import b64decode, b64encode
-from collections import OrderedDict, namedtuple
+from collections import namedtuple
 from urllib import parse
 
 from django.core.paginator import InvalidPage
@@ -14,6 +15,7 @@ from django.template import loader
 from django.utils.encoding import force_str
 from django.utils.translation import gettext_lazy as _
 
+from rest_framework import RemovedInDRF317Warning
 from rest_framework.compat import coreapi, coreschema
 from rest_framework.exceptions import NotFound
 from rest_framework.response import Response
@@ -151,6 +153,8 @@ class BasePagination:
 
     def get_schema_fields(self, view):
         assert coreapi is not None, 'coreapi must be installed to use `get_schema_fields()`'
+        if coreapi is not None:
+            warnings.warn('CoreAPI compatibility is deprecated and will be removed in DRF 3.17', RemovedInDRF317Warning)
         return []
 
     def get_schema_operation_parameters(self, view):
@@ -224,16 +228,17 @@ class PageNumberPagination(BasePagination):
         return page_number
 
     def get_paginated_response(self, data):
-        return Response(OrderedDict([
-            ('count', self.page.paginator.count),
-            ('next', self.get_next_link()),
-            ('previous', self.get_previous_link()),
-            ('results', data)
-        ]))
+        return Response({
+            'count': self.page.paginator.count,
+            'next': self.get_next_link(),
+            'previous': self.get_previous_link(),
+            'results': data,
+        })
 
     def get_paginated_response_schema(self, schema):
         return {
             'type': 'object',
+            'required': ['count', 'results'],
             'properties': {
                 'count': {
                     'type': 'integer',
@@ -310,6 +315,8 @@ class PageNumberPagination(BasePagination):
 
     def get_schema_fields(self, view):
         assert coreapi is not None, 'coreapi must be installed to use `get_schema_fields()`'
+        if coreapi is not None:
+            warnings.warn('CoreAPI compatibility is deprecated and will be removed in DRF 3.17', RemovedInDRF317Warning)
         assert coreschema is not None, 'coreschema must be installed to use `get_schema_fields()`'
         fields = [
             coreapi.Field(
@@ -394,16 +401,17 @@ class LimitOffsetPagination(BasePagination):
         return list(queryset[self.offset:self.offset + self.limit])
 
     def get_paginated_response(self, data):
-        return Response(OrderedDict([
-            ('count', self.count),
-            ('next', self.get_next_link()),
-            ('previous', self.get_previous_link()),
-            ('results', data)
-        ]))
+        return Response({
+            'count': self.count,
+            'next': self.get_next_link(),
+            'previous': self.get_previous_link(),
+            'results': data
+        })
 
     def get_paginated_response_schema(self, schema):
         return {
             'type': 'object',
+            'required': ['count', 'results'],
             'properties': {
                 'count': {
                     'type': 'integer',
@@ -524,6 +532,8 @@ class LimitOffsetPagination(BasePagination):
 
     def get_schema_fields(self, view):
         assert coreapi is not None, 'coreapi must be installed to use `get_schema_fields()`'
+        if coreapi is not None:
+            warnings.warn('CoreAPI compatibility is deprecated and will be removed in DRF 3.17', RemovedInDRF317Warning)
         assert coreschema is not None, 'coreschema must be installed to use `get_schema_fields()`'
         return [
             coreapi.Field(
@@ -795,6 +805,10 @@ class CursorPagination(BasePagination):
         """
         Return a tuple of strings, that may be used in an `order_by` method.
         """
+        # The default case is to check for an `ordering` attribute
+        # on this pagination instance.
+        ordering = self.ordering
+
         ordering_filters = [
             filter_cls for filter_cls in getattr(view, 'filter_backends', [])
             if hasattr(filter_cls, 'get_ordering')
@@ -805,26 +819,19 @@ class CursorPagination(BasePagination):
             # then we defer to that filter to determine the ordering.
             filter_cls = ordering_filters[0]
             filter_instance = filter_cls()
-            ordering = filter_instance.get_ordering(request, queryset, view)
-            assert ordering is not None, (
-                'Using cursor pagination, but filter class {filter_cls} '
-                'returned a `None` ordering.'.format(
-                    filter_cls=filter_cls.__name__
-                )
-            )
-        else:
-            # The default case is to check for an `ordering` attribute
-            # on this pagination instance.
-            ordering = self.ordering
-            assert ordering is not None, (
-                'Using cursor pagination, but no ordering attribute was declared '
-                'on the pagination class.'
-            )
-            assert '__' not in ordering, (
-                'Cursor pagination does not support double underscore lookups '
-                'for orderings. Orderings should be an unchanging, unique or '
-                'nearly-unique field on the model, such as "-created" or "pk".'
-            )
+            ordering_from_filter = filter_instance.get_ordering(request, queryset, view)
+            if ordering_from_filter:
+                ordering = ordering_from_filter
+
+        assert ordering is not None, (
+            'Using cursor pagination, but no ordering attribute was declared '
+            'on the pagination class.'
+        )
+        assert '__' not in ordering, (
+            'Cursor pagination does not support double underscore lookups '
+            'for orderings. Orderings should be an unchanging, unique or '
+            'nearly-unique field on the model, such as "-created" or "pk".'
+        )
 
         assert isinstance(ordering, (str, list, tuple)), (
             'Invalid ordering. Expected string or tuple, but got {type}'.format(
@@ -886,15 +893,16 @@ class CursorPagination(BasePagination):
         return str(attr)
 
     def get_paginated_response(self, data):
-        return Response(OrderedDict([
-            ('next', self.get_next_link()),
-            ('previous', self.get_previous_link()),
-            ('results', data)
-        ]))
+        return Response({
+            'next': self.get_next_link(),
+            'previous': self.get_previous_link(),
+            'results': data,
+        })
 
     def get_paginated_response_schema(self, schema):
         return {
             'type': 'object',
+            'required': ['results'],
             'properties': {
                 'next': {
                     'type': 'string',
@@ -927,6 +935,8 @@ class CursorPagination(BasePagination):
 
     def get_schema_fields(self, view):
         assert coreapi is not None, 'coreapi must be installed to use `get_schema_fields()`'
+        if coreapi is not None:
+            warnings.warn('CoreAPI compatibility is deprecated and will be removed in DRF 3.17', RemovedInDRF317Warning)
         assert coreschema is not None, 'coreschema must be installed to use `get_schema_fields()`'
         fields = [
             coreapi.Field(
